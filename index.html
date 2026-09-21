@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UT Market</title>
+
+<!-- ============================================================
+     UT Market — Consumer Data Profiling Classroom Simulation
+     ITERATION 3 (index-v3.html) — catalog & realism pass.
+     Same architecture/algorithm as v2; the PRODUCTS catalog now
+     mixes recognizable brands, generic staples, and experiences.
+     Metadata is assigned by shopping SIGNAL, not by price.
+     Single-file SPA. Vanilla JS + Tailwind (CDN). No backend.
+     -----------------------------------------------------------
+     LOOP DEMONSTRATED:
+       What You Say  -> declared category interests (Stage 1)
+       What We Offer -> personalized offers (Stage 2)
+       What You Do   -> free shopping (Stage 3)
+       What We Record-> local behavioral features
+       What We Infer -> 5 observed-behavior signals + archetype
+     -----------------------------------------------------------
+     STRUCTURE OF THIS FILE
+       1. <head>       : CDN deps, fonts, small custom CSS
+       2. CONFIG       : CATEGORIES, PRODUCTS, OFFERS, DIMENSIONS
+                         -> EDIT THESE to change game content.
+       3. STATE        : single in-memory session object
+       4. HELPERS      : pricing, cart math, offer tracking
+       5. SCORING      : modular, explainable functions
+                         calculateCategorySpending()
+                         calculateBehavioralFeatures()
+                         calculateProfileSignals()
+                         determineArchetype()
+                         generateEvidence()
+                         generateDeclaredVsObserved()
+                         calculateInferenceConfidence()
+                         buildProfile()  (orchestrator)
+       6. RENDERERS    : stages 1-3, analyzing, profile, reveal, reflection
+       7. BOOT         : initial render
+     Metadata & scoring rules are HIDDEN during shopping and only
+     explained after — that is the intended classroom experience.
+     ============================================================ -->
+
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet" />
+
+<script>
+  // Tailwind runtime config (safe defaults; extends font families)
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Plus Jakarta Sans', sans-serif; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* Screen fade-in on mount */
+  .screen-enter { animation: fadeUp .45s ease forwards; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Selected category / card highlight */
+  .is-selected { box-shadow: 0 0 0 3px #4f46e5, 0 10px 24px -8px rgba(79,70,229,.5); }
+
+  /* Toast notifications */
+  #toast-wrap { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%);
+                z-index: 80; display: flex; flex-direction: column; gap: .5rem; align-items: center; }
+  .toast { animation: toastIn .25s ease, toastOut .3s ease 2.3s forwards; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
+
+  /* Analyzing spinner dots */
+  .dot { animation: blink 1.4s infinite both; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,80%,100% { opacity: .2; } 40% { opacity: 1; } }
+
+  /* Profile bars animate width */
+  .bar-fill { transition: width 1.4s cubic-bezier(.16,1,.3,1); }
+
+  /* Reveal (dark console) subtle grid */
+  .console-grid {
+    background-image: linear-gradient(rgba(56,189,248,.06) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(56,189,248,.06) 1px, transparent 1px);
+    background-size: 30px 30px;
+  }
+  .pulse-dot { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+  /* Data-trail / pipeline step reveal */
+  .trail-step { opacity: 0; transform: translateY(8px); animation: fadeUp .5s ease forwards; }
+
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; }
+</style>
+</head>
+
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+  <!-- Toast container -->
+  <div id="toast-wrap"></div>
+
+  <!-- App root: every screen renders into here -->
+  <div id="app"></div>
+
+  <script>
+  "use strict";
+
+  /* ============================================================
+     2. CONFIG  — EDIT GAME CONTENT HERE
+     ============================================================ */
+
+  // Starting budget for Stage 3 (tokens).
+  const STARTING_TOKENS = 1000;
+
+  // Five product categories. `id` is the internal tag used by
+  // products, offers and the scoring algorithm.
+  const CATEGORIES = [
+    { id: "study", name: "Study & Campus", emoji: "📚", blurb: "Hoodies, notebooks, focus gear" },
+    { id: "ent",   name: "Entertainment",  emoji: "🎮", blurb: "Concerts, games, streaming" },
+    { id: "life",  name: "Lifestyle",      emoji: "🧘", blurb: "Athleisure, cameras, tech" },
+    { id: "fun",   name: "Fun & Treats",   emoji: "🎁", blurb: "Blind boxes, plushies, snacks" },
+    { id: "every", name: "Everyday",       emoji: "🛒", blurb: "Coffee, pens, essentials" },
+  ];
+
+  // ---- Product catalog (~22 items, ~4-5 per category) ----
+  //
+  // Hidden behavioral metadata (`meta`), values 0-3. Used ONLY by the
+  // scoring algorithm and NEVER shown during shopping. Meanings:
+  //   campus        : signals campus / study lifestyle
+  //   entertainment : signals entertainment orientation
+  //   brand         : signals brand / premium orientation
+  //   priceConsc    : signals a price-conscious choice (cheap basics high)
+  //   promo         : signals responsiveness to deals / bundles
+  //   discretionary : "want" vs "need" (treats/experiences high, staples low)
+  // `premium: true` marks higher-brand/higher-margin products.
+  //
+  // Prices use realistic tiers so 1000 tokens forces tradeoffs:
+  //   Low 30-100 | Medium 120-350 | High 400-900
+  // Recognizable brands/products are used to feel real, but are
+  // FICTIONALIZED for the classroom — token prices are NOT official
+  // real-world prices, and metadata is assigned by intended shopping
+  // signal, NOT by price (expensive != high brand; cheap != price-conscious).
+  const PRODUCTS = [
+    // --- Study & Campus (6) ---
+    { id: "hellokitty", cat: "study", name: "U of T × Hello Kitty T-Shirt", price: 100, icon: "fa-shirt",     premium: false, meta: { campus: 3, entertainment: 0, brand: 2, priceConsc: 2, promo: 2, discretionary: 2 } },
+    { id: "hoodie",     cat: "study", name: "U of T Hoodie",            price: 300, icon: "fa-shirt",         premium: true,  meta: { campus: 3, entertainment: 0, brand: 2, priceConsc: 0, promo: 1, discretionary: 1 } },
+    { id: "chatgpt",    cat: "study", name: "ChatGPT Plus",             price: 120, icon: "fa-robot",         premium: false, meta: { campus: 2, entertainment: 1, brand: 2, priceConsc: 2, promo: 3, discretionary: 1 } },
+    { id: "notebook",   cat: "study", name: "Notebook Set",             price: 90,  icon: "fa-book",          premium: false, meta: { campus: 2, entertainment: 0, brand: 1, priceConsc: 2, promo: 0, discretionary: 0 } },
+    { id: "headphones", cat: "study", name: "Noise-Cancelling Headphones", price: 420, icon: "fa-headphones", premium: true,  meta: { campus: 2, entertainment: 1, brand: 3, priceConsc: 0, promo: 1, discretionary: 1 } },
+    { id: "sleeve",     cat: "study", name: "Laptop Sleeve",            price: 70,  icon: "fa-laptop",        premium: false, meta: { campus: 2, entertainment: 0, brand: 1, priceConsc: 2, promo: 1, discretionary: 0 } },
+
+    // --- Entertainment (6): music, movies, sports, gaming, subscriptions ---
+    { id: "concert",    cat: "ent",   name: "Concert Ticket",           price: 500, icon: "fa-ticket",        premium: true,  meta: { campus: 0, entertainment: 3, brand: 1, priceConsc: 0, promo: 2, discretionary: 3 } },
+    { id: "cineplex",   cat: "ent",   name: "Cineplex Movie Ticket",    price: 120, icon: "fa-film",          premium: false, meta: { campus: 0, entertainment: 3, brand: 1, priceConsc: 2, promo: 2, discretionary: 2 } },
+    { id: "cineclub",   cat: "ent",   name: "CineClub Membership",      price: 100, icon: "fa-clapperboard",  premium: false, meta: { campus: 0, entertainment: 3, brand: 1, priceConsc: 2, promo: 3, discretionary: 2 } },
+    { id: "f1",         cat: "ent",   name: "F1 Race Ticket",           price: 700, icon: "fa-flag-checkered",premium: true,  meta: { campus: 0, entertainment: 3, brand: 2, priceConsc: 0, promo: 1, discretionary: 3 } },
+    { id: "soccer",     cat: "ent",   name: "Soccer Match Ticket",      price: 350, icon: "fa-futbol",        premium: false, meta: { campus: 0, entertainment: 3, brand: 1, priceConsc: 1, promo: 1, discretionary: 3 } },
+    { id: "gamecred",   cat: "ent",   name: "Game Credits",             price: 200, icon: "fa-gamepad",       premium: false, meta: { campus: 0, entertainment: 3, brand: 0, priceConsc: 1, promo: 3, discretionary: 3 } },
+
+    // --- Lifestyle (6) ---
+    { id: "iphone",     cat: "life",  name: "iPhone 18 Pro",            price: 850, icon: "fa-mobile-screen", premium: true,  meta: { campus: 2, entertainment: 0, brand: 3, priceConsc: 0, promo: 1, discretionary: 1 } },
+    { id: "airpods",    cat: "life",  name: "AirPods Pro 3",            price: 300, icon: "fa-headphones",    premium: true,  meta: { campus: 1, entertainment: 2, brand: 3, priceConsc: 0, promo: 2, discretionary: 2 } },
+    { id: "lululemon",  cat: "life",  name: "lululemon Align Pants",    price: 150, icon: "fa-person-running",premium: true,  meta: { campus: 1, entertainment: 0, brand: 3, priceConsc: 1, promo: 2, discretionary: 2 } },
+    { id: "camera",     cat: "life",  name: "Instant Camera",           price: 300, icon: "fa-camera-retro",  premium: true,  meta: { campus: 1, entertainment: 2, brand: 2, priceConsc: 0, promo: 1, discretionary: 3 } },
+    { id: "tumbler",    cat: "life",  name: "Campus Tumbler",           price: 140, icon: "fa-mug-hot",       premium: false, meta: { campus: 2, entertainment: 0, brand: 2, priceConsc: 1, promo: 1, discretionary: 1 } },
+    { id: "backpack",   cat: "life",  name: "Premium Backpack",         price: 450, icon: "fa-bag-shopping",  premium: true,  meta: { campus: 2, entertainment: 0, brand: 3, priceConsc: 0, promo: 1, discretionary: 2 } },
+
+    // --- Fun & Treats (5) ---
+    { id: "jellycat",   cat: "fun",   name: "Jellycat Plush",           price: 120, icon: "fa-heart",         premium: true,  meta: { campus: 0, entertainment: 1, brand: 2, priceConsc: 1, promo: 2, discretionary: 3 } },
+    { id: "blindbox",   cat: "fun",   name: "Blind Box",                price: 150, icon: "fa-box-open",      premium: false, meta: { campus: 0, entertainment: 2, brand: 2, priceConsc: 1, promo: 3, discretionary: 3 } },
+    { id: "dessert",    cat: "fun",   name: "Premium Dessert",          price: 100, icon: "fa-cake-candles",  premium: true,  meta: { campus: 0, entertainment: 1, brand: 2, priceConsc: 0, promo: 2, discretionary: 3 } },
+    { id: "figure",     cat: "fun",   name: "Collectible Figure",       price: 220, icon: "fa-chess-knight",  premium: true,  meta: { campus: 0, entertainment: 2, brand: 3, priceConsc: 0, promo: 2, discretionary: 3 } },
+    { id: "snackbox",   cat: "fun",   name: "Snack Box",                price: 80,  icon: "fa-cookie-bite",   premium: false, meta: { campus: 0, entertainment: 1, brand: 1, priceConsc: 2, promo: 2, discretionary: 3 } },
+
+    // --- Everyday (5): intentionally generic, unbranded contrast ---
+    { id: "coffee",     cat: "every", name: "Coffee Bundle",            price: 80,  icon: "fa-mug-saucer",    premium: false, meta: { campus: 1, entertainment: 0, brand: 1, priceConsc: 2, promo: 1, discretionary: 1 } },
+    { id: "pens",       cat: "every", name: "Pen Set",                  price: 40,  icon: "fa-pen",           premium: false, meta: { campus: 1, entertainment: 0, brand: 1, priceConsc: 3, promo: 0, discretionary: 0 } },
+    { id: "essentials", cat: "every", name: "Household Essentials",     price: 60,  icon: "fa-basket-shopping",premium: false, meta: { campus: 0, entertainment: 0, brand: 0, priceConsc: 3, promo: 1, discretionary: 0 } },
+    { id: "charger",    cat: "every", name: "Phone Charger",            price: 50,  icon: "fa-plug",          premium: false, meta: { campus: 1, entertainment: 0, brand: 1, priceConsc: 3, promo: 1, discretionary: 0 } },
+    { id: "tote",       cat: "every", name: "Tote Bag",                 price: 45,  icon: "fa-bag-shopping",  premium: false, meta: { campus: 1, entertainment: 0, brand: 1, priceConsc: 3, promo: 1, discretionary: 1 } },
+  ];
+
+  // ---- Personalized offers (Stage 2) ----
+  // We pick 2-3 SPECIFIC product offers based on the user's declared
+  // categories (not a whole-category discount). Each offer targets one
+  // product so redemption is individually trackable. The mechanism is
+  // NOT explained during the game (revealed only at the end).
+  //
+  // For each declared category we have a candidate offer; we surface up
+  // to MAX_OFFERS of them (see generateOffers()).
+  const OFFER_CANDIDATES = {
+    study: { productId: "chatgpt",  pct: 15, sub: "Study smarter this term." },
+    ent:   { productId: "cineplex", pct: 15, sub: "Big screen, small price." },
+    life:  { productId: "airpods",  pct: 10, sub: "Upgrade your everyday audio." },
+    fun:   { productId: "jellycat", pct: 20, sub: "Treat yourself — you earned it." },
+    every: { productId: "coffee",   pct: 10, sub: "Stock up and save." },
+  };
+  const MAX_OFFERS = 3; // show at most 3 personalized offers
+
+  // The five OBSERVED-BEHAVIOR signals (not psychological traits).
+  // Language emphasises "purchasing behavior in this session".
+  const DIMENSIONS = [
+    { key: "campus", label: "Campus Lifestyle",          color: "bg-indigo-500" },
+    { key: "ent",    label: "Entertainment Orientation", color: "bg-fuchsia-500" },
+    { key: "brand",  label: "Brand Orientation",         color: "bg-sky-500" },
+    { key: "price",  label: "Price-Conscious Purchasing",color: "bg-emerald-500" },
+    { key: "promo",  label: "Promotion Responsiveness",  color: "bg-amber-500" },
+  ];
+
+  /* ============================================================
+     3. STATE — single in-memory session (no persistence, no PII)
+     ============================================================ */
+  const state = {
+    screen: "stage1",           // stage1|stage2|stage3|analyzing|profile|reveal|reflection
+    selectedCategories: [],     // Stage 1: declared category ids (exactly 3)
+    offers: [],                 // Stage 2: [{ productId, pct, sub }] shown to user
+    tokens: STARTING_TOKENS,    // Stage 3 budget (derived via remaining())
+    cart: {},                   // Stage 3: { productId: qty }
+    viewed: {},                 // { productId: true } when interacted with
+    profile: null,              // computed profile object (built at Finish)
+    reflection: { accuracy: null, concern: null },
+  };
+
+  const app = document.getElementById("app");
+
+  /* ============================================================
+     4. HELPERS — pricing, cart math, offer generation/tracking
+     ============================================================ */
+
+  const getProduct = (id) => PRODUCTS.find((p) => p.id === id);
+  const catName = (id) => (CATEGORIES.find((c) => c.id === id) || {}).name || id;
+
+  // Generate up to MAX_OFFERS specific-product offers from the user's
+  // declared categories. Each offer targets ONE product (not the whole
+  // category) so redemption can be tracked individually.
+  function generateOffers() {
+    const offers = [];
+    for (const cat of state.selectedCategories) {
+      const cand = OFFER_CANDIDATES[cat];
+      if (cand && offers.length < MAX_OFFERS) {
+        offers.push({ productId: cand.productId, pct: cand.pct, sub: cand.sub, cat });
+      }
+    }
+    return offers;
+  }
+
+  // Is there an active personalized offer for this product? Offers are
+  // per-product (Stage 2), unlike the MVP's whole-category discount.
+  const offerFor = (id) => state.offers.find((o) => o.productId === id) || null;
+
+  // Effective (discounted) price for a product given active offers.
+  function effectivePrice(product) {
+    const offer = offerFor(product.id);
+    if (!offer) return product.price;
+    return Math.round(product.price * (1 - offer.pct / 100));
+  }
+  const hasDiscount = (product) => !!offerFor(product.id);
+
+  // Cart math (based on effective/discounted prices).
+  const cartQty = (id) => state.cart[id] || 0;
+  const cartLineTotal = (id) => cartQty(id) * effectivePrice(getProduct(id));
+  const cartTotal = () =>
+    Object.keys(state.cart).reduce((sum, id) => sum + cartLineTotal(id), 0);
+  const remaining = () => STARTING_TOKENS - cartTotal();
+  const cartItemCount = () =>
+    Object.values(state.cart).reduce((s, q) => s + q, 0);
+  const distinctCount = () =>
+    Object.values(state.cart).filter((q) => q > 0).length;
+
+  // Toast helper (gentle, non-blocking feedback).
+  function showToast(msg, type = "warn") {
+    const styles = {
+      warn: "bg-amber-100 text-amber-900 border-amber-300",
+      info: "bg-indigo-100 text-indigo-900 border-indigo-300",
+      ok:   "bg-emerald-100 text-emerald-900 border-emerald-300",
+    };
+    const el = document.createElement("div");
+    el.className =
+      `toast border ${styles[type]} px-4 py-2.5 rounded-xl shadow-md text-sm font-semibold flex items-center gap-2 max-w-xs`;
+    el.innerHTML = `<i class="fa-solid fa-circle-info"></i><span>${msg}</span>`;
+    document.getElementById("toast-wrap").appendChild(el);
+    setTimeout(() => el.remove(), 2700);
+  }
+
+  // Add one unit of a product, respecting the budget (cannot overspend).
+  function addToCart(id) {
+    const price = effectivePrice(getProduct(id));
+    if (price > remaining()) {
+      showToast("Not enough tokens for that.", "warn");
+      return;
+    }
+    state.cart[id] = cartQty(id) + 1;
+    state.viewed[id] = true;
+    renderStage3();
+  }
+
+  // Remove one unit of a product.
+  function removeFromCart(id) {
+    if (cartQty(id) <= 0) return;
+    state.cart[id] = cartQty(id) - 1;
+    if (state.cart[id] === 0) delete state.cart[id];
+    renderStage3();
+  }
+
+  // Reset the whole session back to Stage 1.
+  function resetApp() {
+    state.screen = "stage1";
+    state.selectedCategories = [];
+    state.offers = [];
+    state.tokens = STARTING_TOKENS;
+    state.cart = {};
+    state.viewed = {};
+    state.profile = null;
+    state.reflection = { accuracy: null, concern: null };
+    activeFilter = "all";
+    renderStage1();
+  }
+
+  /* ============================================================
+     5. SCORING — modular, deterministic, explainable (NO ML)
+     Each dimension is grounded PRIMARILY in observed behavior
+     (spending shares, product counts, discount usage) and only
+     lightly blended with product metadata. Scores are normalized
+     0-100 independently so they vary meaningfully between people.
+     Read top-to-bottom: features -> signals -> archetype -> text.
+     ============================================================ */
+
+  // --- 5a. Spending broken down by category (observed behavior) ---
+  function calculateCategorySpending() {
+    const byCat = {};                       // { cat: tokens spent }
+    CATEGORIES.forEach((c) => (byCat[c.id] = 0));
+    Object.keys(state.cart).forEach((id) => {
+      const p = getProduct(id);
+      byCat[p.cat] += cartLineTotal(id);
+    });
+    const total = Object.values(byCat).reduce((s, v) => s + v, 0);
+    const share = {};                       // { cat: 0..1 share of spend }
+    CATEGORIES.forEach((c) => (share[c.id] = total ? byCat[c.id] / total : 0));
+    return { byCat, share, total };
+  }
+
+  // --- 5b. Rich behavioral feature set (what we RECORD) ---
+  // Everything here is derived only from this local session.
+  function calculateBehavioralFeatures() {
+    const spend = calculateCategorySpending();
+
+    let units = 0, priceSum = 0, discountedUnits = 0, discretionarySpend = 0;
+    let premiumSpend = 0, lowTierUnits = 0;
+    const catsPurchased = new Set();
+    const distinctByCat = {};               // { cat: #distinct products }
+
+    Object.keys(state.cart).forEach((id) => {
+      const p = getProduct(id);
+      const qty = state.cart[id];
+      const eff = effectivePrice(p);
+      units += qty;
+      priceSum += eff * qty;
+      catsPurchased.add(p.cat);
+      distinctByCat[p.cat] = (distinctByCat[p.cat] || 0) + 1;
+      if (offerFor(id)) discountedUnits += qty;       // bought a discounted item
+      discretionarySpend += (p.meta.discretionary >= 2 ? cartLineTotal(id) : 0);
+      if (p.premium) premiumSpend += cartLineTotal(id);
+      if (p.price <= 100) lowTierUnits += qty;        // low price tier by catalog price
+    });
+
+    // Offer tracking: which shown offers were actually redeemed.
+    const offersShown = state.offers.length;
+    const offersRedeemed = state.offers.filter((o) => cartQty(o.productId) > 0).length;
+
+    // Repeat purchases: extra units beyond the first for any product.
+    const repeatUnits = Object.values(state.cart)
+      .reduce((s, q) => s + Math.max(0, q - 1), 0);
+
+    // Did the user buy outside their declared categories?
+    const boughtOutsideDeclared = [...catsPurchased]
+      .some((c) => !state.selectedCategories.includes(c));
+
+    const avgPrice = units ? Math.round(priceSum / units) : 0;
+    const catalogAvg = Math.round(
+      PRODUCTS.reduce((s, p) => s + p.price, 0) / PRODUCTS.length);
+
+    return {
+      spend,                                          // {byCat, share, total}
+      units,                                          // total items bought
+      distinct: distinctCount(),                      // distinct products
+      distinctByCat,
+      categoriesPurchased: catsPurchased.size,        // # categories with purchases
+      catsPurchasedList: [...catsPurchased],
+      totalSpent: spend.total,
+      remaining: STARTING_TOKENS - spend.total,
+      budgetUsedPct: Math.round((spend.total / STARTING_TOKENS) * 100),
+      avgPrice,
+      catalogAvg,
+      discountedUnits,
+      offersShown,
+      offersRedeemed,
+      repeatUnits,
+      discretionarySpend,
+      discretionaryShare: spend.total ? discretionarySpend / spend.total : 0,
+      premiumSpend,
+      premiumShare: spend.total ? premiumSpend / spend.total : 0,
+      lowTierUnits,
+      lowTierShare: units ? lowTierUnits / units : 0,
+      boughtOutsideDeclared,
+    };
+  }
+
+  // Small helper: clamp to 0..100 integer.
+  const clamp100 = (x) => Math.max(0, Math.min(100, Math.round(x)));
+
+  // --- 5c. The five observed-behavior signals (0-100) ---
+  // Each is grounded mostly in behavior, lightly informed by metadata.
+  // If evidence is thin, scores stay moderate rather than spiking.
+  function calculateProfileSignals(f) {
+    const s = f.spend.share;                          // category spend shares
+
+    // Metadata pull: average of a meta key across purchased UNITS,
+    // scaled 0..1 (meta is 0..3). Returns 0 when nothing bought.
+    function metaAvg(key) {
+      if (!f.units) return 0;
+      let acc = 0;
+      Object.keys(state.cart).forEach((id) => {
+        acc += (getProduct(id).meta[key] || 0) * state.cart[id];
+      });
+      return (acc / f.units) / 3;                     // 0..1
+    }
+
+    // Campus Lifestyle: spending on Study & Everyday + campus metadata.
+    const campus = clamp100(
+      100 * (0.55 * (s.study + 0.6 * s.every) + 0.45 * metaAvg("campus")));
+
+    // Entertainment Orientation: mostly entertainment spend share +
+    // count of distinct entertainment products + ent metadata.
+    const entDistinct = (f.distinctByCat.ent || 0);
+    const ent = clamp100(
+      100 * (0.6 * s.ent + 0.2 * Math.min(1, entDistinct / 2) + 0.2 * metaAvg("entertainment")));
+
+    // Brand Orientation: premium spend share + brand metadata.
+    const brand = clamp100(
+      100 * (0.55 * f.premiumShare + 0.45 * metaAvg("brand")));
+
+    // Price-Conscious Purchasing: blend of low-price-tier share, cheaper-
+    // than-catalog-average basket, and discount usage. NOTE: one expensive
+    // purchase alone does NOT force this to zero (multiple signals blended).
+    let priceParts = 0, priceW = 0;
+    priceParts += 0.45 * f.lowTierShare;                        priceW += 0.45;
+    if (f.units) { priceParts += 0.30 * Math.max(0, Math.min(1,
+        (f.catalogAvg - f.avgPrice) / f.catalogAvg + 0.5)); priceW += 0.30; }
+    if (f.units) { priceParts += 0.25 * (f.discountedUnits / f.units); priceW += 0.25; }
+    const price = clamp100(100 * (priceW ? priceParts / priceW : 0.35 /*moderate default*/));
+
+    // Promotion Responsiveness: offers redeemed + discounted purchases +
+    // repeat purchases of promoted items + promo metadata.
+    const redeemRate = f.offersShown ? f.offersRedeemed / f.offersShown : 0;
+    const promotedRepeat = state.offers.reduce(
+      (acc, o) => acc + Math.max(0, cartQty(o.productId) - 1), 0);
+    const promo = clamp100(
+      100 * (0.4 * redeemRate
+           + 0.25 * (f.units ? f.discountedUnits / f.units : 0)
+           + 0.15 * Math.min(1, promotedRepeat / 2)
+           + 0.20 * metaAvg("promo")));
+
+    return { campus, ent, brand, price, promo };
+  }
+
+  // --- 5d. High-level archetype from COMBINATIONS of signals ---
+  // Not simply "highest score wins". Fictional classroom labels only.
+  function determineArchetype(signals, f) {
+    const { campus, ent, brand, price, promo } = signals;
+    const disc = f.discretionaryShare;               // 0..1
+    const funShare = f.spend.share.fun;              // 0..1
+
+    // Ordered rules: first match wins. Thresholds tuned so that a clearly
+    // dominant pattern is required; otherwise fall through to Balanced.
+    if (ent >= 55 && disc >= 0.45)
+      return { key: "experience", name: "The Experience Seeker",
+        tagline: "Drawn to experiences and entertainment." };
+    if (promo >= 55 && (f.offersRedeemed >= 2 || f.discountedUnits >= 2))
+      return { key: "deal", name: "The Deal Optimizer",
+        tagline: "Responsive to offers and discounts." };
+    if (funShare >= 0.35 && disc >= 0.5)
+      return { key: "treat", name: "The Treat Hunter",
+        tagline: "Leans toward fun and little rewards." };
+    if (brand >= 55 && f.spend.share.life >= 0.3)
+      return { key: "curator", name: "The Lifestyle Curator",
+        tagline: "Favors lifestyle and branded products." };
+    if ((campus >= 50) && price >= 50 && disc <= 0.35)
+      return { key: "planner", name: "The Practical Planner",
+        tagline: "Practical, budget-aware, study-oriented." };
+    return { key: "balanced", name: "The Balanced Shopper",
+      tagline: "No single pattern clearly dominates." };
+  }
+
+  // --- 5e. Dynamic evidence lines under the archetype ---
+  // All numbers computed from actual behavior (nothing hard-coded).
+  function generateEvidence(signals, f) {
+    const ev = [];
+    const spend = f.spend;
+    // Dominant category by spend (if any).
+    let domCat = null, domTokens = -1;
+    CATEGORIES.forEach((c) => {
+      if (spend.byCat[c.id] > domTokens) { domTokens = spend.byCat[c.id]; domCat = c.id; }
+    });
+
+    if (f.units === 0) {
+      ev.push("You did not purchase anything this session.");
+      ev.push("With no purchases, there is very little behavior to interpret.");
+      return ev;
+    }
+    if (domCat && spend.total > 0) {
+      const pct = Math.round((spend.byCat[domCat] / spend.total) * 100);
+      ev.push(`${pct}% of your spending went to ${catName(domCat)}.`);
+    }
+    ev.push(`You purchased ${f.units} item(s) across ${f.categoriesPurchased} categor${f.categoriesPurchased === 1 ? "y" : "ies"}.`);
+    if (f.offersShown > 0)
+      ev.push(`You redeemed ${f.offersRedeemed} of ${f.offersShown} personalized offer(s).`);
+    ev.push(`Your average purchase was ${f.avgPrice} tokens (catalog average ${f.catalogAvg}).`);
+    if (f.repeatUnits > 0)
+      ev.push(`You made ${f.repeatUnits} repeat purchase(s) of the same product.`);
+    if (f.premiumShare >= 0.4)
+      ev.push(`${Math.round(f.premiumShare * 100)}% of your spending was on premium products.`);
+    if (f.lowTierShare >= 0.5)
+      ev.push(`${Math.round(f.lowTierShare * 100)}% of your items were lower-priced picks.`);
+    return ev;
+  }
+
+  // --- 5f. Declared (Stage 1) vs Observed (Stage 3) comparison ---
+  function generateDeclaredVsObserved(f) {
+    const declared = state.selectedCategories.slice();
+    // Observed = categories ranked by spend share (only where spend > 0).
+    const observed = CATEGORIES
+      .map((c) => ({ id: c.id, pct: Math.round((f.spend.share[c.id] || 0) * 100) }))
+      .filter((o) => o.pct > 0)
+      .sort((a, b) => b.pct - a.pct);
+
+    // Do declared top interests and observed spending broadly align?
+    const observedTopIds = observed.slice(0, 3).map((o) => o.id);
+    const overlap = declared.filter((d) => observedTopIds.includes(d)).length;
+    const aligned = f.units === 0 ? null : overlap >= 2; // null = no data
+    return { declared, observed, aligned, overlap };
+  }
+
+  // --- 5g. Qualitative inference confidence (NOT a probability) ---
+  // Depends on how much behavior we actually observed. The point is to
+  // show an inference can look precise even on thin evidence.
+  function calculateInferenceConfidence(f) {
+    const evidencePoints = f.units + f.categoriesPurchased + f.distinct;
+    if (f.units === 0) return { level: "None", note: "No purchases to interpret." };
+    if (evidencePoints <= 4) return { level: "Limited evidence", note: "Based on very few actions." };
+    if (evidencePoints <= 9) return { level: "Moderate evidence", note: "Based on a short session." };
+    return { level: "More behavioral evidence", note: "Still only a few minutes of behavior." };
+  }
+
+  // --- 5h. Orchestrator: build the full profile object ---
+  function buildProfile() {
+    const features = calculateBehavioralFeatures();
+    const signals = calculateProfileSignals(features);
+    const archetype = determineArchetype(signals, features);
+    const evidence = generateEvidence(signals, features);
+    const declaredVsObserved = generateDeclaredVsObserved(features);
+    const confidence = calculateInferenceConfidence(features);
+    return { features, signals, archetype, evidence, declaredVsObserved, confidence };
+  }
+
+  /* ============================================================
+     6. RENDERERS
+     Stages 1-3 keep the clean, friendly ecommerce look. The
+     analytical / data-console look begins at the profile and
+     deepens at the critical reveal.
+     ============================================================ */
+
+  // Shared header for the shopping stages.
+  function shopHeader(subtitle) {
+    return `
+      <header class="text-center mb-8">
+        <div class="inline-flex items-center gap-2 text-2xl md:text-3xl font-extrabold tracking-tight">
+          <span class="inline-grid place-items-center w-9 h-9 rounded-xl bg-indigo-600 text-white text-lg">
+            <i class="fa-solid fa-bag-shopping"></i>
+          </span>
+          <span>UT <span class="text-indigo-600">Market</span></span>
+        </div>
+        <p class="text-slate-500 mt-2 text-sm md:text-base">${subtitle}</p>
+      </header>`;
+  }
+
+  // ---------- STAGE 1: Category Preference (WHAT YOU SAY) ----------
+  function renderStage1() {
+    state.screen = "stage1";
+    const cards = CATEGORIES.map((c) => {
+      const active = state.selectedCategories.includes(c.id);
+      return `
+        <button data-cat="${c.id}"
+          class="cat-card text-left bg-white rounded-2xl border border-slate-200 p-5 transition
+                 hover:-translate-y-0.5 hover:shadow-lg ${active ? "is-selected" : ""}">
+          <div class="text-3xl mb-2">${c.emoji}</div>
+          <div class="font-bold text-slate-800">${c.name}</div>
+          <div class="text-sm text-slate-500 mt-1">${c.blurb}</div>
+          <div class="mt-3 text-xs font-semibold ${active ? "text-indigo-600" : "text-slate-400"}">
+            <i class="fa-${active ? "solid" : "regular"} fa-circle-check"></i>
+            ${active ? "Selected" : "Tap to select"}
+          </div>
+        </button>`;
+    }).join("");
+
+    app.innerHTML = `
+      <div class="screen-enter max-w-5xl mx-auto px-4 py-10">
+        ${shopHeader("Welcome! Let's set up your store. <b>Pick 3 categories</b> you're interested in.")}
+        <div class="flex items-center justify-center gap-2 mb-6">
+          <span id="pick-count" class="text-sm font-semibold text-slate-600"></span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">${cards}</div>
+        <div class="mt-8 flex justify-center">
+          <button id="to-stage2"
+            class="px-6 py-3 rounded-xl font-bold text-white bg-indigo-600 shadow-lg
+                   transition disabled:opacity-40 disabled:cursor-not-allowed hover:bg-indigo-700">
+            Continue <i class="fa-solid fa-arrow-right ml-1"></i>
+          </button>
+        </div>
+      </div>`;
+
+    // Toggle categories (limit to exactly 3).
+    app.querySelectorAll(".cat-card").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-cat");
+        const idx = state.selectedCategories.indexOf(id);
+        if (idx >= 0) {
+          state.selectedCategories.splice(idx, 1);
+        } else {
+          if (state.selectedCategories.length >= 3) {
+            showToast("Pick exactly 3 — deselect one first.", "warn");
+            return;
+          }
+          state.selectedCategories.push(id);
+        }
+        renderStage1();
+      });
+    });
+
+    const n = state.selectedCategories.length;
+    const countEl = document.getElementById("pick-count");
+    countEl.textContent = `${n} / 3 selected`;
+    countEl.className = `text-sm font-semibold ${n === 3 ? "text-indigo-600" : "text-slate-500"}`;
+    const cont = document.getElementById("to-stage2");
+    cont.disabled = n !== 3;
+    cont.addEventListener("click", () => { if (n === 3) renderStage2(); });
+  }
+
+  // ---------- STAGE 2: Personalized Offers (WHAT WE OFFER) ----------
+  // 2-3 SPECIFIC product offers generated from declared categories. The
+  // mechanism is NOT explained here (revealed only at the end).
+  function renderStage2() {
+    state.screen = "stage2";
+    state.offers = generateOffers();  // record which offers were shown
+
+    const cards = state.offers.map((o) => {
+      const p = getProduct(o.productId);
+      const eff = Math.round(p.price * (1 - o.pct / 100));
+      return `
+        <div class="relative bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+          <div class="absolute top-0 right-0 bg-rose-500 text-white text-xs font-bold px-3 py-1 rounded-bl-xl">
+            -${o.pct}%
+          </div>
+          <div class="p-5">
+            <div class="text-4xl mb-3 text-indigo-600"><i class="fa-solid ${p.icon}"></i></div>
+            <div class="text-xs font-semibold text-indigo-500 uppercase tracking-wide">${catName(o.cat)}</div>
+            <div class="font-bold text-slate-800 mt-1">${p.name}</div>
+            <div class="text-sm text-slate-500 mt-1">${o.sub}</div>
+            <div class="mt-3 text-sm">
+              <span class="text-slate-400 line-through mr-1">${p.price}</span>
+              <span class="text-rose-600 font-bold">${eff} tokens</span>
+            </div>
+          </div>
+        </div>`;
+    }).join("");
+
+    app.innerHTML = `
+      <div class="screen-enter max-w-5xl mx-auto px-4 py-10">
+        ${shopHeader("✨ Based on your interests, here are some <b>offers picked for you</b>.")}
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">${cards}</div>
+        <p class="text-center text-sm text-slate-400 mt-6">
+          These deals are applied automatically while you shop.
+        </p>
+        <div class="mt-8 flex justify-center">
+          <button id="to-stage3"
+            class="px-6 py-3 rounded-xl font-bold text-white bg-indigo-600 shadow-lg hover:bg-indigo-700 transition">
+            Start Shopping <i class="fa-solid fa-arrow-right ml-1"></i>
+          </button>
+        </div>
+      </div>`;
+
+    document.getElementById("to-stage3").addEventListener("click", () => renderStage3());
+  }
+
+  // ---------- STAGE 3: Free Shopping (WHAT YOU DO) ----------
+  // 1000 tokens, no timer, multiple quantities, no forced spend.
+  let activeFilter = "all";
+
+  function renderStage3() {
+    state.screen = "stage3";
+
+    const chips = [{ id: "all", name: "All", emoji: "🛍️" }, ...CATEGORIES]
+      .map((c) => {
+        const on = activeFilter === c.id;
+        return `<button data-filter="${c.id}"
+          class="filter-chip px-3 py-1.5 rounded-full text-sm font-semibold border transition
+                 ${on ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300"}">
+          ${c.emoji ? c.emoji + " " : ""}${c.name}</button>`;
+      }).join("");
+
+    const visible = PRODUCTS.filter((p) => activeFilter === "all" || p.cat === activeFilter);
+    const cards = visible.map((p) => {
+      const qty = cartQty(p.id);
+      const disc = hasDiscount(p);
+      const eff = effectivePrice(p);
+      const priceHtml = disc
+        ? `<span class="text-slate-400 line-through text-sm mr-1">${p.price}</span>
+           <span class="text-rose-600 font-bold">${eff}</span>`
+        : `<span class="text-slate-800 font-bold">${p.price}</span>`;
+      const qtyControls = qty > 0
+        ? `<div class="flex items-center gap-2">
+             <button data-dec="${p.id}" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 font-bold">−</button>
+             <span class="w-6 text-center font-bold">${qty}</span>
+             <button data-inc="${p.id}" class="w-8 h-8 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 font-bold">+</button>
+           </div>`
+        : `<button data-inc="${p.id}"
+             class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700">
+             <i class="fa-solid fa-plus mr-1"></i>Add</button>`;
+      return `
+        <div class="bg-white rounded-2xl border ${qty > 0 ? "border-indigo-300" : "border-slate-200"} p-4 flex flex-col transition hover:shadow-md">
+          ${disc ? `<span class="self-start bg-rose-100 text-rose-600 text-xs font-bold px-2 py-0.5 rounded-full mb-2">FOR YOU · DEAL</span>` : ""}
+          <div class="text-3xl text-indigo-500 mb-2"><i class="fa-solid ${p.icon}"></i></div>
+          <div class="font-bold text-slate-800 leading-snug">${p.name}</div>
+          <div class="text-xs text-slate-400 mt-0.5">${catName(p.cat)}</div>
+          <div class="mt-2 text-sm"><i class="fa-solid fa-coins text-amber-400 mr-1"></i>${priceHtml}</div>
+          <div class="mt-3">${qtyControls}</div>
+        </div>`;
+    }).join("");
+
+    const cartLines = distinctCount() === 0
+      ? `<p class="text-sm text-slate-400 text-center py-4">Your cart is empty.</p>`
+      : Object.keys(state.cart).map((id) => {
+          const p = getProduct(id);
+          return `<div class="flex items-center justify-between text-sm py-1.5 border-b border-slate-100 last:border-0">
+            <span class="text-slate-600">${p.name} <span class="text-slate-400">×${cartQty(id)}</span></span>
+            <span class="font-semibold text-slate-700">${cartLineTotal(id)}</span>
+          </div>`;
+        }).join("");
+
+    app.innerHTML = `
+      <div class="screen-enter max-w-6xl mx-auto px-4 py-6">
+        ${shopHeader("Browse freely and spend your tokens however you like. There's no time limit.")}
+
+        <div class="sticky top-3 z-30 mb-6">
+          <div class="bg-white/90 backdrop-blur border border-slate-200 rounded-2xl shadow-sm px-4 py-3
+                      flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-5">
+              <div>
+                <div class="text-xs text-slate-400 font-semibold">REMAINING</div>
+                <div class="text-lg font-extrabold text-indigo-600"><i class="fa-solid fa-coins text-amber-400 mr-1"></i><span id="hud-remaining">${remaining()}</span> / ${STARTING_TOKENS}</div>
+              </div>
+              <div>
+                <div class="text-xs text-slate-400 font-semibold">SPENT</div>
+                <div class="text-lg font-extrabold text-slate-700">${cartTotal()}</div>
+              </div>
+              <div>
+                <div class="text-xs text-slate-400 font-semibold">ITEMS</div>
+                <div class="text-lg font-extrabold text-slate-700">${cartItemCount()}</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="btn-reset" class="px-3 py-2 rounded-xl text-sm font-semibold text-slate-500 hover:bg-slate-100">
+                <i class="fa-solid fa-rotate-left mr-1"></i>Reset
+              </button>
+              <button id="btn-finish" class="px-5 py-2 rounded-xl text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow">
+                Finish Shopping <i class="fa-solid fa-flag-checkered ml-1"></i>
+              </button>
+            </div>
+          </div>
+          <div class="h-1.5 bg-slate-200 rounded-full mt-2 overflow-hidden">
+            <div class="h-full bg-indigo-500 transition-all" style="width:${Math.min(100, Math.round((cartTotal()/STARTING_TOKENS)*100))}%"></div>
+          </div>
+        </div>
+
+        <div class="grid lg:grid-cols-4 gap-6">
+          <div class="lg:col-span-3">
+            <div class="flex flex-wrap gap-2 mb-4">${chips}</div>
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">${cards}</div>
+          </div>
+          <aside class="lg:col-span-1">
+            <div class="bg-white rounded-2xl border border-slate-200 p-4 lg:sticky lg:top-32">
+              <div class="font-bold text-slate-800 mb-2"><i class="fa-solid fa-cart-shopping mr-1 text-indigo-500"></i>Your Cart</div>
+              <div id="cart-lines">${cartLines}</div>
+              <div class="flex items-center justify-between mt-3 pt-3 border-t border-slate-200 font-bold">
+                <span>Total</span><span class="text-indigo-600">${cartTotal()}</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>`;
+
+    app.querySelectorAll(".filter-chip").forEach((b) =>
+      b.addEventListener("click", () => { activeFilter = b.getAttribute("data-filter"); renderStage3(); }));
+    app.querySelectorAll("[data-inc]").forEach((b) =>
+      b.addEventListener("click", () => addToCart(b.getAttribute("data-inc"))));
+    app.querySelectorAll("[data-dec]").forEach((b) =>
+      b.addEventListener("click", () => removeFromCart(b.getAttribute("data-dec"))));
+    document.getElementById("btn-reset").addEventListener("click", () => {
+      if (confirm("Reset your cart and start over from Stage 1?")) resetApp();
+    });
+    document.getElementById("btn-finish").addEventListener("click", showAnalyzing);
+  }
+
+  // ---------- TRANSITION: Analyzing (WHAT WE RECORD) ----------
+  function showAnalyzing() {
+    state.screen = "analyzing";
+    state.profile = buildProfile(); // compute now; reveal after a short beat
+    app.innerHTML = `
+      <div class="screen-enter min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
+        <div class="text-5xl text-indigo-500 mb-6"><i class="fa-solid fa-magnifying-glass-chart"></i></div>
+        <h2 class="text-xl md:text-2xl font-bold text-slate-700">
+          Analyzing your shopping behavior<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+        </h2>
+        <p class="text-slate-400 mt-3 text-sm max-w-md">
+          Turning your choices into behavioral data.
+        </p>
+      </div>`;
+    setTimeout(showProfile, 2200);
+  }
+
+  // ---------- PROFILE (WHAT WE INFER) ----------
+  // Clean analytical dashboard: archetype + evidence + confidence +
+  // declared-vs-observed + five observed-behavior signal bars.
+  function showProfile() {
+    state.screen = "profile";
+    const { signals, archetype, evidence, declaredVsObserved, confidence } = state.profile;
+
+    // Five signal bars (labels/keys from DIMENSIONS; keys match signals).
+    const bars = DIMENSIONS.map((d) => `
+      <div class="mb-4">
+        <div class="flex justify-between text-sm mb-1">
+          <span class="font-semibold text-slate-200">${d.label}</span>
+          <span class="mono text-slate-400"><span class="val" data-target="${signals[d.key]}">0</span>%</span>
+        </div>
+        <div class="h-3 bg-slate-800 rounded-full overflow-hidden">
+          <div class="bar-fill h-full ${d.color} rounded-full" style="width:0%" data-target="${signals[d.key]}"></div>
+        </div>
+      </div>`).join("");
+
+    // Evidence bullets (dynamic numbers).
+    const evidenceList = evidence.map((t) => `
+      <li class="flex gap-2 text-slate-300 text-sm leading-relaxed">
+        <i class="fa-solid fa-angle-right text-indigo-400 mt-1"></i><span>${t}</span>
+      </li>`).join("");
+
+    // Declared vs observed comparison.
+    const declaredChips = declaredVsObserved.declared.map((id) =>
+      `<span class="inline-block bg-slate-800 text-slate-200 text-xs font-semibold px-2.5 py-1 rounded-full mr-1 mb-1">${catName(id)}</span>`).join("");
+    const observedRows = declaredVsObserved.observed.length
+      ? declaredVsObserved.observed.map((o) => `
+          <div class="flex items-center gap-2 text-sm mb-1.5">
+            <span class="w-28 text-slate-300">${catName(o.id)}</span>
+            <div class="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div class="h-full bg-sky-500 rounded-full" style="width:${o.pct}%"></div>
+            </div>
+            <span class="mono text-slate-400 w-10 text-right">${o.pct}%</span>
+          </div>`).join("")
+      : `<p class="text-sm text-slate-500">No purchases were made.</p>`;
+    const alignNote = declaredVsObserved.aligned === null
+      ? "No purchases to compare against your declared interests."
+      : declaredVsObserved.aligned
+        ? "Your declared interests and observed purchases broadly matched."
+        : "Your declared interests and observed purchases were not identical.";
+
+    // Confidence chip color by level.
+    const confColor = {
+      "None": "text-slate-400 border-slate-600",
+      "Limited evidence": "text-amber-300 border-amber-500/50",
+      "Moderate evidence": "text-sky-300 border-sky-500/50",
+      "More behavioral evidence": "text-emerald-300 border-emerald-500/50",
+    }[confidence.level] || "text-slate-400 border-slate-600";
+
+    app.innerHTML = `
+      <div class="screen-enter console-grid min-h-screen -mx-4 px-4 py-10 bg-slate-950">
+        <div class="max-w-3xl mx-auto">
+
+          <!-- Archetype header -->
+          <div class="text-center mb-6">
+            <div class="inline-flex items-center gap-2 text-xs mono text-indigo-400 border border-indigo-500/40 rounded-full px-3 py-1">
+              <span class="w-2 h-2 rounded-full bg-indigo-400 pulse-dot"></span> PROFILE GENERATED
+            </div>
+            <h2 class="text-2xl md:text-4xl font-extrabold text-white mt-4">${archetype.name}</h2>
+            <p class="text-slate-400 text-sm mt-1">${archetype.tagline}</p>
+            <p class="text-slate-500 text-xs mt-1">Based on your behavior in UT Market</p>
+            <div class="mt-3 inline-flex items-center gap-2 text-xs mono border ${confColor} rounded-full px-3 py-1">
+              <i class="fa-solid fa-gauge-simple"></i> Inference confidence: ${confidence.level}
+            </div>
+          </div>
+
+          <!-- Evidence -->
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 mb-6">
+            <div class="text-sm font-bold text-white mb-3"><i class="fa-solid fa-magnifying-glass text-sky-400 mr-1"></i>What we observed</div>
+            <ul class="space-y-2">${evidenceList}</ul>
+          </div>
+
+          <!-- Declared vs Observed -->
+          <div class="grid md:grid-cols-2 gap-4 mb-6">
+            <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+              <div class="text-xs mono font-bold text-indigo-400 mb-3">WHAT YOU TOLD US</div>
+              <div>${declaredChips}</div>
+            </div>
+            <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+              <div class="text-xs mono font-bold text-sky-400 mb-3">WHAT YOU ACTUALLY DID</div>
+              ${observedRows}
+            </div>
+          </div>
+          <p class="text-center text-sm text-slate-400 mb-8"><i class="fa-solid fa-circle-info mr-1"></i>${alignNote}</p>
+
+          <!-- Signals -->
+          <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 mb-6">
+            <div class="text-sm font-bold text-white mb-4"><i class="fa-solid fa-chart-simple text-amber-400 mr-1"></i>What we inferred from your behavior</div>
+            ${bars}
+            <p class="text-xs text-slate-500 mt-2">Signals inferred from this shopping session only.</p>
+          </div>
+
+          <!-- Disclaimer -->
+          <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-4 text-xs text-slate-400 mb-8">
+            This is a simplified simulation based only on your behavior in this shopping session.
+            It is not a validated psychological or personality assessment.
+          </div>
+
+          <div class="text-center">
+            <button id="to-reveal" class="px-6 py-3 rounded-xl font-bold text-white bg-sky-600 hover:bg-sky-700 shadow-lg">
+              Continue <i class="fa-solid fa-arrow-right ml-1"></i>
+            </button>
+          </div>
+        </div>
+      </div>`;
+
+    // Animate bars + count-up numbers.
+    requestAnimationFrame(() => {
+      app.querySelectorAll(".bar-fill").forEach((el) => {
+        el.style.width = el.getAttribute("data-target") + "%";
+      });
+      app.querySelectorAll(".val").forEach((el) => {
+        const target = parseInt(el.getAttribute("data-target"), 10);
+        let cur = 0;
+        const step = Math.max(1, Math.round(target / 30));
+        const t = setInterval(() => {
+          cur = Math.min(target, cur + step);
+          el.textContent = cur;
+          if (cur >= target) clearInterval(t);
+        }, 40);
+      });
+    });
+
+    document.getElementById("to-reveal").addEventListener("click", showReveal);
+  }
+
+  // ---------- CRITICAL REVEAL: 5-step data pipeline ----------
+  // Darker, analytical. The five steps are generated dynamically from
+  // the actual session: Said -> Offered -> Did -> Recorded -> Inferred.
+  function showReveal() {
+    state.screen = "reveal";
+    const { features: f, signals } = state.profile;
+
+    // Build a concrete example thread through the pipeline. Prefer a
+    // redeemed offer; else the dominant-spend category; else a neutral path.
+    const redeemed = state.offers.find((o) => cartQty(o.productId) > 0);
+    let saidCat, offeredText, didText, recordedText, inferredText;
+
+    if (redeemed) {
+      const p = getProduct(redeemed.productId);
+      saidCat = redeemed.cat;
+      offeredText = `We showed you a personalized ${p.name} offer (−${redeemed.pct}%).`;
+      didText = `You purchased ${p.name} ×${cartQty(p.id)}.`;
+      recordedText = `We recorded the purchase, price, quantity, and offer redemption.`;
+      inferredText = `We raised your ${catName(p.cat) === "Entertainment" ? "Entertainment" : catName(p.cat)} and Promotion Responsiveness signals.`;
+    } else if (f.units > 0) {
+      // dominant category by spend
+      let domCat = state.selectedCategories[0], domTokens = -1;
+      CATEGORIES.forEach((c) => {
+        if ((f.spend.byCat[c.id] || 0) > domTokens) { domTokens = f.spend.byCat[c.id]; domCat = c.id; }
+      });
+      saidCat = state.selectedCategories[0];
+      offeredText = `We showed you offers aligned with your interests.`;
+      didText = `You spent most in ${catName(domCat)} (${Math.round((f.spend.byCat[domCat] / f.spend.total) * 100)}% of spending).`;
+      recordedText = `We recorded each product, price, quantity, and category.`;
+      inferredText = `We adjusted your signals — e.g. ${catName(domCat)}-related orientation.`;
+    } else {
+      saidCat = state.selectedCategories[0];
+      offeredText = `We showed you offers aligned with your interests.`;
+      didText = `You browsed but did not purchase.`;
+      recordedText = `We recorded that no offers were redeemed.`;
+      inferredText = `With little behavior, we kept signals moderate.`;
+    }
+
+    // The five pipeline steps.
+    const steps = [
+      { label: "WHAT YOU SAID",     icon: "fa-comment",       text: `You selected ${catName(saidCat)}.`, color: "text-indigo-300" },
+      { label: "WHAT WE OFFERED",   icon: "fa-tag",           text: offeredText, color: "text-fuchsia-300" },
+      { label: "WHAT YOU DID",      icon: "fa-hand-pointer",  text: didText, color: "text-sky-300" },
+      { label: "WHAT WE RECORDED",  icon: "fa-database",      text: recordedText, color: "text-amber-300" },
+      { label: "WHAT WE INFERRED",  icon: "fa-chart-simple",  text: inferredText, color: "text-rose-300" },
+    ];
+
+    const pipeline = steps.map((s, i) => `
+      <div class="trail-step" style="animation-delay:${0.18 * i}s">
+        <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex items-start gap-3">
+          <i class="fa-solid ${s.icon} ${s.color} mt-1"></i>
+          <div>
+            <div class="text-[11px] mono font-bold ${s.color}">${s.label}</div>
+            <div class="text-sm text-slate-200 mt-0.5">${s.text}</div>
+          </div>
+        </div>
+      </div>
+      ${i < steps.length - 1 ? `<div class="flex justify-center py-1 trail-step" style="animation-delay:${0.18 * i + 0.09}s"><i class="fa-solid fa-arrow-down text-slate-600"></i></div>` : ""}
+    `).join("");
+
+    app.innerHTML = `
+      <div class="screen-enter console-grid min-h-screen -mx-4 px-4 py-12 bg-slate-950">
+        <div class="max-w-2xl mx-auto text-center">
+          <h2 class="text-3xl md:text-4xl font-extrabold text-white leading-tight">
+            But you didn't <span class="text-rose-500">tell</span> us most of this.
+          </h2>
+          <p class="text-slate-300 mt-3 text-lg font-semibold">We inferred it.</p>
+
+          <div class="mt-10 text-left space-y-1">${pipeline}</div>
+
+          <div class="mt-10 bg-gradient-to-r from-sky-600/20 to-indigo-600/20 border border-slate-700 rounded-2xl p-6">
+            <p class="text-lg md:text-xl font-bold text-white">This is the idea behind consumer data mining.</p>
+            <p class="text-slate-400 text-sm mt-2">
+              Ordinary, voluntary behavior becomes data — and data becomes inference and prediction.
+              This game is a <b>simplified analogy</b> for that datafication process, not a recreation of any
+              company's actual algorithm.
+            </p>
+          </div>
+
+          <div class="mt-8">
+            <button id="to-reflection" class="px-6 py-3 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-lg">
+              Continue <i class="fa-solid fa-arrow-right ml-1"></i>
+            </button>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById("to-reflection").addEventListener("click", renderReflection);
+  }
+
+  // ---------- REFLECTION ----------
+  function renderReflection() {
+    state.screen = "reflection";
+
+    const accuracyOpts = [
+      { id: "very",   label: "Very much" },
+      { id: "partly", label: "Partly" },
+      { id: "not",    label: "Not really" },
+    ];
+    const concernOpts = [
+      { id: "A", label: "A company knowing what you bought" },
+      { id: "B", label: "A company predicting what you might buy next" },
+      { id: "C", label: "A company inferring something you never explicitly told them" },
+    ];
+
+    const btn = (group, o) => {
+      const sel = state.reflection[group] === o.id;
+      return `<button data-group="${group}" data-val="${o.id}"
+        class="reflect-btn w-full text-left px-4 py-3 rounded-xl border transition font-semibold
+               ${sel ? "bg-indigo-600 text-white border-indigo-600"
+                     : "bg-slate-900/70 text-slate-200 border-slate-700 hover:border-indigo-500"}">
+        ${o.label}</button>`;
+    };
+
+    app.innerHTML = `
+      <div class="screen-enter console-grid min-h-screen -mx-4 px-4 py-12 bg-slate-950">
+        <div class="max-w-2xl mx-auto">
+          <h2 class="text-2xl md:text-3xl font-extrabold text-white text-center mb-10">Reflection</h2>
+
+          <div class="mb-8">
+            <div class="text-lg font-bold text-white mb-3">Does this profile describe you?</div>
+            <div class="grid sm:grid-cols-3 gap-3">${accuracyOpts.map((o)=>btn("accuracy", o)).join("")}</div>
+          </div>
+
+          <div class="mb-8">
+            <div class="text-lg font-bold text-white mb-3">Which would concern you more?</div>
+            <div class="space-y-3">${concernOpts.map((o)=>btn("concern", o)).join("")}</div>
+          </div>
+
+          <div id="reflect-summary" class="hidden bg-slate-900/70 border border-slate-800 rounded-2xl p-5 text-slate-300 text-sm mb-8"></div>
+
+          <div class="text-center">
+            <button id="btn-restart" class="px-6 py-3 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg">
+              <i class="fa-solid fa-rotate-left mr-1"></i>Play Again
+            </button>
+            <p class="text-slate-500 text-xs mt-4 max-w-md mx-auto">
+              Reminder: this was a classroom simulation. The profile is a simplified, simulated
+              inference — not a validated psychological or personality assessment. No data left your browser.
+            </p>
+          </div>
+        </div>
+      </div>`;
+
+    app.querySelectorAll(".reflect-btn").forEach((b) =>
+      b.addEventListener("click", () => {
+        state.reflection[b.getAttribute("data-group")] = b.getAttribute("data-val");
+        renderReflection(); // re-render to show selection + summary
+      }));
+    updateReflectionSummary();
+    document.getElementById("btn-restart").addEventListener("click", resetApp);
+  }
+
+  // Summary once both questions answered (classroom discussion only; no "correct" answer).
+  function updateReflectionSummary() {
+    const box = document.getElementById("reflect-summary");
+    if (!box) return;
+    const { accuracy, concern } = state.reflection;
+    if (accuracy && concern) {
+      const accMap = { very: "describes you very much", partly: "partly describes you", not: "does not really describe you" };
+      const conMap = {
+        A: "a company knowing what you bought",
+        B: "a company predicting what you might buy next",
+        C: "a company inferring something you never told them",
+      };
+      box.classList.remove("hidden");
+      box.innerHTML = `You felt the profile <b class="text-white">${accMap[accuracy]}</b>,
+        and you're most concerned about <b class="text-white">${conMap[concern]}</b>.
+        <span class="block mt-2 text-slate-400">There's no right answer — this is for discussion.
+        Option C, inference, is central to the datafication debate: the most sensitive conclusions
+        are often the ones you never disclosed.</span>`;
+    }
+  }
+
+  /* ============================================================
+     7. BOOT — initial render
+     ============================================================ */
+  renderStage1();
+
+  </script>
+</body>
+</html>
