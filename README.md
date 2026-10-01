@@ -1,7 +1,7 @@
-# INF312_Consumer_Data_Mining_Simulation
+# INF312_Consumer_Data_Simulation
 # UT Market — Algorithm Explainer Memo (Lecture Notes)
 
-> **INF312: The World Becomes Data** · Consumer Data Mining Simulation (corresponds to `index-v3.html`)
+> **INF312: The World Becomes Data** · Consumer Data Simulation (corresponds to `index-v3.html`)
 >
 > **Core Pedagogical Takeaway**: This simulation contains no machine learning, predictive AI, or real-world dataset training. All scores, weights, heuristics, and classification thresholds are **handcrafted, deterministic rules**. That design choice is itself the central lesson: consumer profiling systems that appear "intelligent" are often simply human engineers and business analysts deciding on categories, weights, and thresholds behind the scenes.
 
